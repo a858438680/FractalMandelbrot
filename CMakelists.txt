@@ -35,7 +35,7 @@ set(WEBP_BUILD_WEBPMUX OFF CACHE BOOL "Build the webpmux command line tool." FOR
 set(WEBP_BUILD_EXTRAS OFF CACHE BOOL "Build extras." FORCE)
 FetchContent_MakeAvailable(libwebp)
 
-add_executable(mandelbrot "main.cpp" "colormap.cpp" "colormap.h" "generator.hpp" "utils.h" "utils.cpp")
+add_executable(mandelbrot "main.cpp" "generator.hpp" "fractal.hpp" "colormap.cpp" "colormap.h" "utils.h" "utils.cpp")
 
 target_include_directories(mandelbrot PRIVATE
   ${libwebp_SOURCE_DIR}/src

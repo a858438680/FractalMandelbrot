@@ -1,7 +1,6 @@
 #ifndef _FRACTAL_GENERATOR_HPP_
 #define _FRACTAL_GENERATOR_HPP_
 #ifdef _MSC_VER
-#define _CRT_SECURE_NO_WARNINGS
 #include <ciso646>
 #endif
 
@@ -16,6 +15,7 @@
 
 #include <cstring>
 #include <cstdint>
+#include <cassert>
 
 #include <webp/encode.h>
 #include <webp/mux.h>
@@ -32,12 +32,13 @@ concept ColorMap = requires(T func, uint8_t * pixel, double gray_scale) {
 	{ func(pixel, gray_scale) } -> std::same_as<void>;
 };
 
-template <Fractal FractalFunc, ColorMap ColorMapFunc, unsigned SuperSampling = 1> 
+template <Fractal FractalFunc, ColorMap ColorMapFunc> 
 class image_generator {
 public:
-	image_generator(FractalFunc fractal_func, ColorMapFunc colormap_func, int width, int height, double base_point_x, double base_point_y, double fixed_point_x, double fixed_point_y, double scale)
+	image_generator(FractalFunc fractal_func, ColorMapFunc colormap_func, unsigned super_sampling, int width, int height, double base_point_x, double base_point_y, double fixed_point_x, double fixed_point_y, double scale)
 		: m_fractal(fractal_func)
 		, m_colormap(colormap_func)
+		, m_super_sampling(super_sampling)
 		, m_width(width)
 		, m_height(height)
 		, m_base_point_x(base_point_x)
@@ -51,7 +52,7 @@ public:
 		, m_encoded(false)
 		, m_generated(false)
 	{
-		if constexpr (SuperSampling == 1) {
+		if (m_super_sampling == 1) {
 			memset(m_bitmap.get(), 0, width * height * 3);
 		}
 	}
@@ -62,8 +63,8 @@ public:
 	image_generator& operator=(image_generator&&) = delete;
 
 	void generate() {
-		static_assert(SuperSampling != 0, "SuperSampling cannot be zero!");
-		if constexpr (SuperSampling == 1) {
+		assert(m_super_sampling != 0);
+		if (m_super_sampling == 1) {
 			for (auto i = 0; i < m_height; ++i) {
 				for (auto j = 0; j < m_width; ++j) {
 					auto index = (i * m_width + j) * 3;
@@ -81,11 +82,11 @@ public:
 				for (auto j = 0; j < m_width; ++j) {
 					auto index = (i * m_width + j) * 3;
 					auto r = 0., g = 0., b = 0.;
-					for (auto inner_i = 0; inner_i < SuperSampling; ++inner_i) {
-						for (auto inner_j = 0; inner_j < SuperSampling; ++inner_j) {
+					for (auto inner_i = 0u; inner_i < m_super_sampling; ++inner_i) {
+						for (auto inner_j = 0u; inner_j < m_super_sampling; ++inner_j) {
 							std::array<uint8_t, 3> pixel{};
-							auto x = (j + (inner_j + 0.5) / SuperSampling - m_fixed_point_x) / m_scale + m_base_point_x;
-							auto y = (m_fixed_point_y - (i + (inner_i + 0.5) / SuperSampling)) / m_scale + m_base_point_y;
+							auto x = (j + (inner_j + 0.5) / m_super_sampling - m_fixed_point_x) / m_scale + m_base_point_x;
+							auto y = (m_fixed_point_y - (i + (inner_i + 0.5) / m_super_sampling)) / m_scale + m_base_point_y;
 							auto [in_graphics, color] = m_fractal(x, y);
 							if (not in_graphics) {
 								m_colormap(pixel.data(), color);
@@ -95,7 +96,7 @@ public:
 							b += pixel[2];
 						}
 					}
-					constexpr auto sq_sampling = SuperSampling * SuperSampling;
+					auto sq_sampling = m_super_sampling * m_super_sampling;
 					r /= sq_sampling;
 					g /= sq_sampling;
 					b /= sq_sampling;
@@ -138,6 +139,7 @@ public:
 private:
 	FractalFunc m_fractal;
 	ColorMapFunc m_colormap;
+	unsigned m_super_sampling;
 	int m_width, m_height;
 	double m_base_point_x, m_base_point_y, m_fixed_point_x, m_fixed_point_y, m_scale;
 	std::unique_ptr<uint8_t[]> m_bitmap;
@@ -146,12 +148,27 @@ private:
 	bool m_generated, m_encoded;
 };
 
-template <Fractal FractalFunc, ColorMap ColorMapFunc, unsigned SuperSampling = 1, unsigned FrameRate = 24, double Speed = 2.>
+template <Fractal FractalFunc, ColorMap ColorMapFunc>
 class animation_generator {
 public:
-	animation_generator(FractalFunc fractal_func, ColorMapFunc colormap_func, int width, int height, double base_point_x, double base_point_y, double fixed_point_x, double fixed_point_y, double init_scale, int frames_num)
+	animation_generator(
+		FractalFunc fractal_func,
+		ColorMapFunc colormap_func,
+		unsigned super_sampling,
+		int width,
+		int height,
+		double base_point_x,
+		double base_point_y,
+		double fixed_point_x,
+		double fixed_point_y,
+		double init_scale,
+		double frame_rate,
+		unsigned frames_num,
+		double speed
+	) noexcept
 		: m_fractal(fractal_func)
 		, m_colormap(colormap_func)
+		, m_super_sampling(super_sampling)
 		, m_width(width)
 		, m_height(height)
 		, m_base_point_x(base_point_x)
@@ -159,9 +176,12 @@ public:
 		, m_fixed_point_x(fixed_point_x)
 		, m_fixed_point_y(fixed_point_y)
 		, m_init_scale(init_scale)
+		, m_frame_rate(frame_rate)
 		, m_frames_num(frames_num)
+		, m_speed(speed)
 		, m_data(nullptr, WebPFree)
-		, m_len(0) {}
+		, m_len(0)
+	{}
 
 	animation_generator(const animation_generator&) = delete;
 	animation_generator(animation_generator&&) = delete;
@@ -169,8 +189,11 @@ public:
 	animation_generator& operator=(animation_generator&&) = delete;
 
 	void save(const std::filesystem::path& filename) {
+		assert(m_frame_rate != 0.);
+		assert(m_frames_num != 0);
+		assert(m_speed != 0);
 		//calculate the scale_factor between two frames
-		auto frame_scale = std::exp(std::log(Speed) / FrameRate);
+		auto frame_scale = std::exp(std::log(m_speed) / m_frame_rate);
 
 		//initialize WebP animation encoder options and WebP frame options
 		WebPAnimEncoderOptions enc_options;
@@ -194,9 +217,9 @@ public:
 		//sync
 		std::mutex anim_mutex;
 		std::condition_variable cv;
-		int frame_count = 0;
+		auto frame_count = 0u;
 
-		for (auto i = 0; i < m_frames_num; ++i) {
+		for (auto i = 0u; i < m_frames_num; ++i) {
 			//prepare frame container
 			frames.emplace_back(new WebPPicture, free_picture);
 			auto frame = frames.back().get();
@@ -208,9 +231,10 @@ public:
 
 			//task to fill the frame conatiner
 			auto frame_task = [&, i, scale, frame]() {
-				image_generator<FractalFunc, ColorMapFunc, SuperSampling> frame_gen(
+				image_generator<FractalFunc, ColorMapFunc> frame_gen(
 					m_fractal,
 					m_colormap,
+					m_super_sampling,
 					m_width,
 					m_height,
 					m_base_point_x,
@@ -225,7 +249,7 @@ public:
 					std::unique_lock<std::mutex> lk(anim_mutex);
 					std::wcout << L"generated frame " << i << std::endl;
 					cv.wait(lk, [&, i] { return frame_count == i; });
-					WebPAnimEncoderAdd(enc.get(), frame, static_cast<int>(1000. / FrameRate * i), &config);
+					WebPAnimEncoderAdd(enc.get(), frame, static_cast<int>(1000. / m_frame_rate * i), &config);
 					std::wcout << L"added frame " << i << std::endl;
 					++frame_count;
 					lk.unlock();
@@ -245,7 +269,7 @@ public:
 		for (auto& trd : trds) {
 			trd.join();
 		}
-		WebPAnimEncoderAdd(enc.get(), NULL, static_cast<int>(1000. / FrameRate * m_frames_num), NULL);
+		WebPAnimEncoderAdd(enc.get(), NULL, static_cast<int>(1000. / m_frame_rate * m_frames_num), NULL);
 		WebPData data;
 		std::unique_ptr<WebPData, decltype(WebPDataClear)*> pdata(&data, WebPDataClear);
 		WebPAnimEncoderAssemble(enc.get(), &data);
@@ -255,8 +279,9 @@ public:
 private:
 	FractalFunc m_fractal;
 	ColorMapFunc m_colormap;
-	int m_width, m_height, m_frames_num;
-	double m_base_point_x, m_base_point_y, m_fixed_point_x, m_fixed_point_y, m_init_scale;
+	unsigned m_super_sampling, m_frames_num;
+	int m_width, m_height;
+	double m_base_point_x, m_base_point_y, m_fixed_point_x, m_fixed_point_y, m_init_scale, m_frame_rate, m_speed;
 	size_t m_len;
 	std::unique_ptr<uint8_t, decltype(WebPFree)*> m_data;
 };
